@@ -22,14 +22,14 @@
 #include <utility>
 #include <vector>
 
-#include "source/opcode.h"
-#include "source/operand.h"
-#include "source/util/ilist_node.h"
-#include "source/util/small_vector.h"
-
+#include "OpenCLDebugInfo100.h"
 #include "source/latest_version_glsl_std_450_header.h"
 #include "source/latest_version_spirv_header.h"
+#include "source/opcode.h"
+#include "source/operand.h"
 #include "source/opt/reflect.h"
+#include "source/util/ilist_node.h"
+#include "source/util/small_vector.h"
 #include "spirv-tools/libspirv.h"
 
 const uint32_t kNoDebugScope = 0;
@@ -162,7 +162,8 @@ class Instruction : public utils::IntrusiveNodeBase<Instruction> {
         has_type_id_(false),
         has_result_id_(false),
         unique_id_(0),
-        dbg_scope_(kNoDebugScope, kNoInlinedAt) {}
+        dbg_scope_(kNoDebugScope, kNoInlinedAt),
+        is_cl100_dbg_inst_(false) {}
 
   // Creates a default OpNop instruction.
   Instruction(IRContext*);
@@ -275,8 +276,12 @@ class Instruction : public utils::IntrusiveNodeBase<Instruction> {
   // Sets the result id
   inline void SetResultId(uint32_t res_id);
   inline bool HasResultId() const { return has_result_id_; }
+  // Sets |is_cl100_dbg_inst_| as true, which means it is an
+  // OpenCL.100.DebugInfo instruction.
+  inline void SetOpenCL100DebugInstrunction() { is_cl100_dbg_inst_ = true; }
   // Sets DebugScope.
   inline void SetDebugScope(const DebugScope& scope);
+  inline void SetDebugScope(uint32_t scope);
   inline const DebugScope& GetDebugScope() const { return dbg_scope_; }
   // Remove the |index|-th operand
   void RemoveOperand(uint32_t index) {
@@ -496,6 +501,11 @@ class Instruction : public utils::IntrusiveNodeBase<Instruction> {
   // rules for physical addressing.
   bool IsValidBasePointer() const;
 
+  // Returns debug opcode of an OpenCL.100.DebugInfo instruction. If
+  // it is not an OpenCL.100.DebugInfo instruction, just returns
+  // OpenCLDebugInfo100InstructionsMax.
+  OpenCLDebugInfo100Instructions GetOpenCL100DebugOpcode() const;
+
   // Dump this instruction on stderr.  Useful when running interactive
   // debuggers.
   void Dump() const;
@@ -532,6 +542,9 @@ class Instruction : public utils::IntrusiveNodeBase<Instruction> {
 
   // DebugScope that wraps this instruction.
   DebugScope dbg_scope_;
+
+  // True if the instruction is an OpenCL.100.DebugInfo instruction.
+  bool is_cl100_dbg_inst_;
 
   friend InstructionList;
 };
@@ -608,6 +621,13 @@ inline void Instruction::SetDebugScope(const DebugScope& scope) {
   dbg_scope_ = scope;
   for (auto& i : dbg_line_insts_) {
     i.dbg_scope_ = scope;
+  }
+}
+
+inline void Instruction::SetDebugScope(uint32_t scope) {
+  dbg_scope_.SetLexicalScope(scope);
+  for (auto& i : dbg_line_insts_) {
+    i.dbg_scope_.SetLexicalScope(scope);
   }
 }
 
