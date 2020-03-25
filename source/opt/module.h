@@ -52,7 +52,8 @@ class Module {
   Module()
       : header_({}),
         contains_debug_scope_(false),
-        contains_opencl_100_debug_insts_(false) {}
+        contains_opencl_100_debug_insts_(false),
+        debug_info_none_(nullptr) {}
 
   // Sets the header to the given |header|.
   void SetHeader(const ModuleHeader& header) { header_ = header; }
@@ -121,6 +122,10 @@ class Module {
 
   // Appends a function to this module.
   inline void AddFunction(std::unique_ptr<Function> f);
+
+  // Get the existing DebugInfoNone. If it is null, create one and keep it.
+  Instruction* GetDebugInfoNone(uint32_t type_id, uint32_t result_id,
+                                uint32_t ext_set);
 
   // Sets |contains_debug_scope_| as true.
   inline void SetContainsDebugScope();
@@ -317,6 +322,10 @@ class Module {
 
   // This module contains OpenCL.100.DebugInfo extension instructions.
   bool contains_opencl_100_debug_insts_;
+
+  // DebugInfoNone instruction. We need only a single DebugInfoNone.
+  // To reuse the existing one, we keep it using this member variable.
+  Instruction* debug_info_none_;
 };
 
 // Pretty-prints |module| to |str|. Returns |str|.
