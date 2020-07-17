@@ -644,6 +644,38 @@ bool IsConstIntScalarTypeWith32Or64Bits(ValidationState_t& _,
   return size_in_bits == 32 || size_in_bits == 64;
 }
 
+bool IsConstWithIntScalarType(ValidationState_t& _, const Instruction* inst,
+                              uint32_t word_index) {
+  auto* int_scalar_const = _.FindDef(inst->word(word_index));
+  if (int_scalar_const->opcode() == SpvOpConstant) {
+    if (_.IsIntScalarType(int_scalar_const->type_id())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool IsDebugVariableWithIntScalarType(ValidationState_t& _,
+                                      const Instruction* inst,
+                                      uint32_t word_index) {
+  auto* dbg_int_scalar_var = _.FindDef(inst->word(word_index));
+  if (OpenCLDebugInfo100Instructions(dbg_int_scalar_var->word(4)) ==
+          OpenCLDebugInfo100DebugLocalVariable ||
+      OpenCLDebugInfo100Instructions(dbg_int_scalar_var->word(4)) ==
+          OpenCLDebugInfo100DebugGlobalVariable) {
+    auto* dbg_type = _.FindDef(dbg_int_scalar_var->word(6));
+    if (OpenCLDebugInfo100Instructions(dbg_type->word(4)) ==
+            OpenCLDebugInfo100DebugTypeBasic &&
+        (OpenCLDebugInfo100DebugBaseTypeAttributeEncoding(dbg_type->word(7)) ==
+             OpenCLDebugInfo100Signed ||
+         OpenCLDebugInfo100DebugBaseTypeAttributeEncoding(dbg_type->word(7)) ==
+             OpenCLDebugInfo100Unsigned)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // anonymous namespace
 
 spv_result_t ValidateExtension(ValidationState_t& _, const Instruction* inst) {
@@ -2951,18 +2983,133 @@ spv_result_t ValidateExtInst(ValidationState_t& _, const Instruction* inst) {
         }
         break;
       }
+      case OpenCLDebugInfo100DebugTypeTemplate: {
+        if (!DoesDebugInfoOperandMatchExpectation(
+                _,
+                [](OpenCLDebugInfo100Instructions dbg_inst) {
+                  return dbg_inst == OpenCLDebugInfo100DebugTypeComposite ||
+                         dbg_inst == OpenCLDebugInfo100DebugFunction;
+                },
+                inst, 5)) {
+          return _.diag(SPV_ERROR_INVALID_DATA, inst)
+                 << ext_inst_name() << ": "
+                 << "expected operand Target must be DebugTypeComposite "
+                 << "or DebugFunction";
+        }
+        for (uint32_t word_index = 6; word_index < num_words; ++word_index) {
+          if (!DoesDebugInfoOperandMatchExpectation(
+                  _,
+                  [](OpenCLDebugInfo100Instructions dbg_inst) {
+                    return dbg_inst ==
+                               OpenCLDebugInfo100DebugTypeTemplateParameter ||
+                           dbg_inst ==
+                               OpenCLDebugInfo100DebugTypeTemplateTemplateParameter;
+                  },
+                  inst, word_index)) {
+            return _.diag(SPV_ERROR_INVALID_DATA, inst)
+                   << ext_inst_name() << ": "
+                   << "expected operand Parameters must be "
+                   << "DebugTypeTemplateParameter or "
+                   << "DebugTypeTemplateTemplateParameter";
+          }
+        }
+        break;
+      }
+      case OpenCLDebugInfo100DebugTypeTemplateParameter: {
+        CHECK_OPERAND("Name", SpvOpString, 5);
+        auto validate_actual_type =
+            ValidateOperandDebugType(_, "Actual Type", inst, 6, ext_inst_name);
+        if (validate_actual_type != SPV_SUCCESS) return validate_actual_type;
+        if (!DoesDebugInfoOperandMatchExpectation(
+                _,
+                [](OpenCLDebugInfo100Instructions dbg_inst) {
+                  return dbg_inst == OpenCLDebugInfo100DebugInfoNone;
+                },
+                inst, 7)) {
+          CHECK_OPERAND("Value", SpvOpConstant, 7);
+        }
+        CHECK_DEBUG_OPERAND("Source", OpenCLDebugInfo100DebugSource, 8);
+        break;
+      }
+      case OpenCLDebugInfo100DebugGlobalVariable: {
+        CHECK_OPERAND("Name", SpvOpString, 5);
+        auto validate_type =
+            ValidateOperandDebugType(_, "Type", inst, 6, ext_inst_name);
+        if (validate_type != SPV_SUCCESS) return validate_type;
+        CHECK_DEBUG_OPERAND("Source", OpenCLDebugInfo100DebugSource, 7);
+        auto validate_scope =
+            ValidateOperandLexicalScope(_, "Scope", inst, 10, ext_inst_name);
+        if (validate_scope != SPV_SUCCESS) return validate_scope;
+        CHECK_OPERAND("Linkage Name", SpvOpString, 11);
+        if (!DoesDebugInfoOperandMatchExpectation(
+                _,
+                [](OpenCLDebugInfo100Instructions dbg_inst) {
+                  return dbg_inst == OpenCLDebugInfo100DebugInfoNone;
+                },
+                inst, 12)) {
+          auto* operand = _.FindDef(inst->word(12));
+          if (operand->opcode() != SpvOpVariable &&
+              operand->opcode() != SpvOpConstant) {
+            return _.diag(SPV_ERROR_INVALID_DATA, inst)
+                   << ext_inst_name() << ": "
+                   << "expected operand Variable must be a result id of "
+                      "OpVariable or OpConstant or DebugInfoNone";
+          }
+        }
+        if (num_words == 14) {
+          CHECK_DEBUG_OPERAND("Static Member Declaration",
+                              OpenCLDebugInfo100DebugTypeMember, 13);
+        }
+        break;
+      }
+      case OpenCLDebugInfo100DebugInlinedAt: {
+        auto validate_scope =
+            ValidateOperandLexicalScope(_, "Scope", inst, 6, ext_inst_name);
+        if (validate_scope != SPV_SUCCESS) return validate_scope;
+        if (num_words == 8) {
+          CHECK_DEBUG_OPERAND("Inlined", OpenCLDebugInfo100DebugInlinedAt, 7);
+        }
+        break;
+      }
+      case OpenCLDebugInfo100DebugValue: {
+        CHECK_DEBUG_OPERAND("Local Variable",
+                            OpenCLDebugInfo100DebugLocalVariable, 5);
+        CHECK_DEBUG_OPERAND("Expression", OpenCLDebugInfo100DebugExpression, 7);
+
+        // Check if it is a struct type or not
+        auto* debug_local_var = _.FindDef(inst->word(5));
+        auto* debug_local_var_type = _.FindDef(debug_local_var->word(6));
+        bool is_struct =
+            OpenCLDebugInfo100Instructions(debug_local_var_type->word(4)) ==
+            OpenCLDebugInfo100DebugTypeComposite;
+
+        for (uint32_t word_index = 8; word_index < num_words; ++word_index) {
+          if (is_struct) {
+            if (!IsConstWithIntScalarType(_, inst, word_index)) {
+              return _.diag(SPV_ERROR_INVALID_DATA, inst)
+                     << ext_inst_name() << ": expected operand Indexes for "
+                     << "a local variable with a struct, class, or union "
+                     << "type is OpConstant with an integer scalar type.";
+            }
+          } else {
+            if (!IsConstWithIntScalarType(_, inst, word_index) &&
+                !IsDebugVariableWithIntScalarType(_, inst, word_index)) {
+              return _.diag(SPV_ERROR_INVALID_DATA, inst)
+                     << ext_inst_name() << ": expected operand Indexes is "
+                     << "OpConstant, DebugGlobalVariable, or "
+                     << "DebugLocalVariable with an integer scalar type. ";
+            }
+          }
+        }
+        break;
+      }
 
       // TODO: Add validation rules for remaining cases as well.
       case OpenCLDebugInfo100DebugTypePtrToMember:
-      case OpenCLDebugInfo100DebugTypeTemplate:
-      case OpenCLDebugInfo100DebugTypeTemplateParameter:
       case OpenCLDebugInfo100DebugTypeTemplateTemplateParameter:
       case OpenCLDebugInfo100DebugTypeTemplateParameterPack:
-      case OpenCLDebugInfo100DebugGlobalVariable:
       case OpenCLDebugInfo100DebugLexicalBlockDiscriminator:
-      case OpenCLDebugInfo100DebugInlinedAt:
       case OpenCLDebugInfo100DebugInlinedVariable:
-      case OpenCLDebugInfo100DebugValue:
       case OpenCLDebugInfo100DebugMacroDef:
       case OpenCLDebugInfo100DebugMacroUndef:
       case OpenCLDebugInfo100DebugImportedEntity:
