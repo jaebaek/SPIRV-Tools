@@ -40,9 +40,19 @@ IrLoader::IrLoader(const MessageConsumer& consumer, Module* m)
 bool IrLoader::AddInstruction(const spv_parsed_instruction_t* inst) {
   ++inst_index_;
   const auto opcode = static_cast<SpvOp>(inst->opcode);
-  if (IsDebugLineInst(opcode)) {
+  if (opcode == SpvOpLine) {
+    // OpLine information applies to the instructions physically following it,
+    // up to the first occurrence of the next OpLine instruction.
+    dbg_line_info_.clear();
     dbg_line_info_.push_back(
         Instruction(module()->context(), *inst, last_dbg_scope_));
+    return true;
+  }
+
+  if (opcode == SpvOpNoLine) {
+    // OpLine information applies to the instructions physically following it,
+    // up to the first occurrence of the next OpNoLine instruction.
+    dbg_line_info_.clear();
     return true;
   }
 
@@ -90,7 +100,6 @@ bool IrLoader::AddInstruction(const spv_parsed_instruction_t* inst) {
 
   std::unique_ptr<Instruction> spv_inst(
       new Instruction(module()->context(), *inst, std::move(dbg_line_info_)));
-  dbg_line_info_.clear();
 
   const char* src = source_.c_str();
   spv_position_t loc = {inst_index_, 0, 0};
@@ -126,6 +135,10 @@ bool IrLoader::AddInstruction(const spv_parsed_instruction_t* inst) {
       return false;
     }
     block_ = MakeUnique<BasicBlock>(std::move(spv_inst));
+
+    // OpLine information applies to the instructions physically following it,
+    // up to the first occurrence of the next end of block.
+    dbg_line_info_.clear();
   } else if (IsTerminatorInst(opcode)) {
     if (function_ == nullptr) {
       Error(consumer_, src, loc, "terminator instruction outside function");

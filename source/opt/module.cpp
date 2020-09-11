@@ -143,9 +143,25 @@ void Module::ToBinary(std::vector<uint32_t>* binary, bool skip_nop) const {
 
   size_t bound_idx = binary->size() - 2;
   DebugScope last_scope(kNoDebugScope, kNoInlinedAt);
-  auto write_inst = [binary, skip_nop, &last_scope,
+  bool prev_instr_has_line = false;
+  auto write_inst = [binary, skip_nop, &last_scope, &prev_instr_has_line,
                      this](const Instruction* i) {
     if (!(skip_nop && i->IsNop())) {
+      // If previous instruction has the line information and |i| does not,
+      // we have to emit OpNoLine in front of |i|.
+      if (!IsDebugLineInst(i->opcode())) {
+        if (prev_instr_has_line && i->dbg_line_insts().empty()) {
+          static Instruction noline(context(), SpvOpNoLine);
+          noline.ToBinaryWithoutAttachedDebugInsts(binary);
+        }
+        prev_instr_has_line = !i->dbg_line_insts().empty();
+      }
+      // If |i| starts new block or function, the previous instruction
+      // must be the end of block. We want to avoid OpNoLine emission.
+      if (i->opcode() == SpvOpLabel || i->opcode() == SpvOpFunction || i->opcode() == SpvOpLoopMerge || i->opcode() == SpvOpSelectionMerge) {
+        prev_instr_has_line = false;
+      }
+
       const auto& scope = i->GetDebugScope();
       if (scope != last_scope) {
         // Emit DebugScope |scope| to |binary|.
