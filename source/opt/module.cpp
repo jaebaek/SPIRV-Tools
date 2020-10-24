@@ -143,8 +143,32 @@ void Module::ToBinary(std::vector<uint32_t>* binary, bool skip_nop) const {
 
   size_t bound_idx = binary->size() - 2;
   DebugScope last_scope(kNoDebugScope, kNoInlinedAt);
-  auto write_inst = [binary, skip_nop, &last_scope,
+  const Instruction* last_line_inst = nullptr;
+  auto write_inst = [binary, skip_nop, &last_scope, &last_line_inst,
                      this](const Instruction* i) {
+    if (last_line_inst != nullptr) {
+      // If the current instruction is OpLine and it is the same with
+      // the last line instruction that is still effective (can be applied
+      // to the next instruction), we skip writing the current instruction.
+      if (i->opcode() == SpvOpLine) {
+        uint32_t operand_index = 0;
+        if (last_line_inst->WhileEachInOperand(
+                [&operand_index, i](const uint32_t* word) {
+                  assert(i->NumInOperandWords() > operand_index);
+                  return *word == i->GetSingleWordInOperand(operand_index++);
+                })) {
+          return;
+        }
+      } else {
+        // If the current instruction does not have the line information,
+        // the last line information is not effective any more. Emit OpNoLine
+        // to specify it.
+        if (i->dbg_line_insts().empty()) {
+          binary->push_back((1 << 16) | static_cast<uint16_t>(SpvOpNoLine));
+          last_line_inst = nullptr;
+        }
+      }
+    }
     if (!(skip_nop && i->IsNop())) {
       const auto& scope = i->GetDebugScope();
       if (scope != last_scope) {
@@ -156,6 +180,14 @@ void Module::ToBinary(std::vector<uint32_t>* binary, bool skip_nop) const {
       }
 
       i->ToBinaryWithoutAttachedDebugInsts(binary);
+    }
+    auto opcode = i->opcode();
+    // Update the last line instruction.
+    if (IsTerminatorInst(opcode) || opcode == SpvOpLoopMerge ||
+        opcode == SpvOpSelectionMerge || opcode == SpvOpNoLine) {
+      last_line_inst = nullptr;
+    } else if (opcode == SpvOpLine) {
+      last_line_inst = i;
     }
   };
   ForEachInst(write_inst, true);
